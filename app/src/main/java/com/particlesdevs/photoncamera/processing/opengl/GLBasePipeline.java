@@ -2,18 +2,23 @@ package com.particlesdevs.photoncamera.processing.opengl;
 
 import android.graphics.Bitmap;
 import android.graphics.Point;
+import android.os.Build;
 import com.particlesdevs.photoncamera.util.Log;
 
+import com.particlesdevs.photoncamera.BuildConfig;
 import com.particlesdevs.photoncamera.api.Settings;
 import com.particlesdevs.photoncamera.processing.opengl.nodes.Node;
 import com.particlesdevs.photoncamera.processing.render.Parameters;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Properties;
+import java.util.function.Consumer;
 
 import static android.opengl.GLES20.GL_CLAMP_TO_EDGE;
 import static android.opengl.GLES20.GL_FRAMEBUFFER;
@@ -48,6 +53,11 @@ public class GLBasePipeline implements AutoCloseable {
         Properties properties = new Properties();
         try {
             File init = new File(sPHOTON_TUNING_DIR, "PhotonCameraTuning.ini");
+            if (usesOptionalTuningFile(BuildConfig.BUILD_TYPE, Build.VERSION.SDK_INT)) {
+                loadOptionalTuning(init, properties, message -> Log.i("PostPipeline", message));
+                mProp = properties;
+                return;
+            }
             if(!init.exists()) {
                 init.createNewFile();
                 /*InputStream inputStream = PhotonCamera.getAssetLoader().getInputStream("tuning/PhotonCameraTuning.ini");
@@ -63,6 +73,23 @@ public class GLBasePipeline implements AutoCloseable {
             e.printStackTrace();
         }
         mProp = properties;
+    }
+
+    static boolean usesOptionalTuningFile(String buildType, int sdkInt) {
+        return sdkInt >= Build.VERSION_CODES.R && "manualPhoto".equals(buildType);
+    }
+
+    static void loadOptionalTuning(File file, Properties properties, Consumer<String> report)
+            throws IOException {
+        try {
+            java.nio.file.Files.readAttributes(file.toPath(), java.nio.file.attribute.BasicFileAttributes.class);
+        } catch (java.nio.file.NoSuchFileException e) {
+            report.accept("Optional PhotonCameraTuning.ini absent; using built-in tuning defaults");
+            return;
+        }
+        try (InputStream input = java.nio.file.Files.newInputStream(file.toPath())) {
+            properties.load(input);
+        }
     }
     public GLTexture getMain(){
         if(texnum == 1) {
