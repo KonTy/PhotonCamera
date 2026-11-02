@@ -111,6 +111,12 @@ public class ParamController implements Observer {
             Log.w(TAG, "setFocus(): mPreviewRequestBuilder is null");
             return;
         }
+        Integer previousMode = builder.get(CaptureRequest.CONTROL_AF_MODE);
+        boolean hadTouchFocus = captureController.mTouchFocus != null
+                && captureController.mTouchFocus.isTouchFocus;
+        if (captureController.mTouchFocus != null) {
+            captureController.mTouchFocus.clearFocusOwnership();
+        }
         if (focusDist == ManualParamModel.FOCUS_AUTO) {
             builder.set(CaptureRequest.CONTROL_AF_MODE, PreferenceKeys.getAfMode());
         } else {
@@ -119,6 +125,11 @@ public class ParamController implements Observer {
         }
         FOCUS = focusDist;
         captureController.rebuildPreviewBuilder();
+        if (focusDist == ManualParamModel.FOCUS_AUTO
+                && (hadTouchFocus
+                || !Integer.valueOf(CaptureRequest.CONTROL_AF_MODE_AUTO).equals(previousMode))) {
+            captureController.startPreviewAutoFocus();
+        }
     }
 
     public void setEV(int ev) {

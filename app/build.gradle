@@ -105,7 +105,7 @@ android {
     applicationVariants.all {
         variant -> variant.outputs.all {
             if (variant.buildType.name == 'manualPhoto') {
-                versionCodeOverride = Math.max(versionBuild, 27178)
+                versionCodeOverride = Math.max(versionBuild, 27179)
             }
             outputFileName = "PhotonCamera-${versionName}${versionBuild}-${variant.name}.apk"
         }

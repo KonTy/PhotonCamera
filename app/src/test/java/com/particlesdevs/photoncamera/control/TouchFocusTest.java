@@ -1,6 +1,13 @@
 package com.particlesdevs.photoncamera.control;
 
+import android.hardware.camera2.CameraCharacteristics;
+import android.hardware.camera2.CaptureRequest;
+import android.view.View;
+
+import com.particlesdevs.photoncamera.capture.CaptureController;
+
 import org.junit.Test;
+import org.mockito.InOrder;
 
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
@@ -8,6 +15,8 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.*;
 
 /**
  * Verifies the tap → sensor-crop geometry used by touch focus:
@@ -219,5 +228,45 @@ public class TouchFocusTest {
         assertTrue(TouchFocus.shouldEngageAutoFallback(100, true));
         // AUTO mode unsupported on the HAL: never engage.
         assertFalse(TouchFocus.shouldEngageAutoFallback(100, false));
+    }
+
+    @Test
+    public void clearingWithoutTapOwnershipDoesNotCancelManualOrInitialAutoFocus() {
+        CaptureController controller = mock(CaptureController.class);
+        TouchFocus touch = new TouchFocus(controller, mock(View.class), null, mock(View.class));
+        touch.resetFocusCircle();
+        touch.clearFocusOwnership();
+        assertFalse(touch.isTouchFocus);
+        verifyNoInteractions(controller);
+    }
+
+    @Test
+    public void clearingTapRestoresBaselineWithIdleBuilderAndDoesNotRepeatOnSecondReset() {
+        CaptureController controller = mock(CaptureController.class);
+        TouchFocus touch = new TouchFocus(controller, mock(View.class), null, mock(View.class));
+        CaptureRequest.Builder builder = mock(CaptureRequest.Builder.class);
+        controller.mPreviewRequestBuilder = builder;
+        CameraCharacteristics previous = CaptureController.mCameraCharacteristics;
+        boolean previousBurst = CaptureController.burst;
+        CameraCharacteristics characteristics = mock(CameraCharacteristics.class);
+        when(characteristics.get(any())).thenReturn(0); // No metering-region support.
+        CaptureController.mCameraCharacteristics = characteristics;
+        CaptureController.burst = false;
+        try {
+            touch.isTouchFocus = true;
+            touch.resetFocusCircle();
+            assertFalse(touch.isTouchFocus);
+            InOrder order = inOrder(builder, controller);
+            order.verify(builder).set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_CANCEL);
+            order.verify(controller).rebuildPreviewBuilderOneShot();
+            order.verify(builder).set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE);
+            order.verify(controller).reset3Aparams();
+            clearInvocations(controller);
+            touch.resetFocusCircle();
+            verifyNoInteractions(controller);
+        } finally {
+            CaptureController.mCameraCharacteristics = previous;
+            CaptureController.burst = previousBurst;
+        }
     }
 }

@@ -294,7 +294,6 @@ public class TouchFocus {
             // full-frame 3A. The circle itself must stay non-clickable so taps and
             // long-presses pass through to the viewfinder gesture handler.
             resetFocusCircle();
-            setInitialAFAE();
             return;
         }
         MeteringRectangle region = computeTapRegion(fx, fy);
@@ -350,10 +349,6 @@ public class TouchFocus {
             }
             ((FocusCircleView) focusCircleView).setAfState(afstate);
         }
-    }
-
-    private void setInitialAFAE() {
-        captureController.reset3Aparams();
     }
 
     /**
@@ -808,11 +803,20 @@ public class TouchFocus {
         timeoutRunnable = null;
     }
 
-    private void resetAutoFocus() {
+    /** Drop tap ownership without changing requests (manual focus or a replacement session). */
+    public void clearFocusOwnership() {
         synchronized (seqLock) {
             seqGeneration++;
             abortSequenceLocked();
             isTouchFocus = false;
+        }
+    }
+
+    private void resetAutoFocus() {
+        synchronized (seqLock) {
+            boolean hadTouchFocus = isTouchFocus;
+            clearFocusOwnership();
+            if (!hadTouchFocus) return;
             if (CaptureController.burst) return;
             CaptureRequest.Builder builder = captureController.mPreviewRequestBuilder;
             CameraCharacteristics characteristics = CaptureController.mCameraCharacteristics;
@@ -827,10 +831,8 @@ public class TouchFocus {
                 builder.set(CaptureRequest.CONTROL_AF_REGIONS, regionsOr(captureController.mPreviewMeteringAF, zero));
             if (maxRegions(characteristics, CameraCharacteristics.CONTROL_MAX_REGIONS_AE) > 0)
                 builder.set(CaptureRequest.CONTROL_AE_REGIONS, regionsOr(captureController.mPreviewMeteringAE, zero));
-            builder.set(CaptureRequest.CONTROL_AF_MODE, captureController.mPreviewAFMode);
-            builder.set(CaptureRequest.CONTROL_AE_MODE, captureController.mPreviewAEMode);
             builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_IDLE);
-            captureController.rebuildPreviewBuilder();
+            captureController.reset3Aparams();
         }
     }
 
