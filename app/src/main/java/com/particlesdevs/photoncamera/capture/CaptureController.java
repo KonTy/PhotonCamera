@@ -718,11 +718,6 @@ public class CaptureController implements MediaRecorder.OnInfoListener {
                 mTouchFocus.onCaptureResult(result);
             }
             cameraEventsListener.onPreviewCaptureCompleted(result);
-            if(PreferenceKeys.getAfMode() == CaptureRequest.CONTROL_AF_MODE_AUTO && !burst && (mTouchFocus == null || !mTouchFocus.isTouchFocus)
-                    && PhotonCamera.getSettings().selectedMode != CameraMode.VIDEO) {
-                mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START);
-                rebuildPreviewBuilderOneShot();
-            }
         }
 
     };
@@ -1374,6 +1369,8 @@ public class CaptureController implements MediaRecorder.OnInfoListener {
         }
         try {
 //            mCaptureSession.stopRepeating();
+            mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER,
+                    CaptureRequest.CONTROL_AF_TRIGGER_IDLE);
             mPreviewInputRequest = mPreviewRequestBuilder.build();
             submitVideoRepeating();
         } catch (IllegalStateException | IllegalArgumentException | NullPointerException e) {
@@ -1401,25 +1398,50 @@ public class CaptureController implements MediaRecorder.OnInfoListener {
         mCaptureSession.setRepeatingRequest(mPreviewInputRequest, mCaptureCallback, mBackgroundHandler);
     }
 
-     public void rebuildPreviewBuilderOneShot() {
-        if(burst) return;
-        if (mPreviewRequestBuilder == null || mCaptureSession == null) {
-            return;
-        }
-        if (mHighSpeedRecording && mIsRecordingVideo) {
-            // Single-shot captures are illegal in constrained high-speed
-            // sessions; the repeating stream already carries any builder edits.
-            Log.w(TAG, "rebuildPreviewBuilderOneShot: skipped during high-speed recording");
-            return;
-        }
+    public void rebuildPreviewBuilderOneShot() {
+        CaptureRequest.Builder builder = mPreviewRequestBuilder;
+        if (builder == null) return;
         try {
+            if (burst || mCaptureSession == null || !previewAfCanTrigger()) return;
+            if (mHighSpeedRecording && mIsRecordingVideo) {
+                // Single-shot captures are illegal in constrained high-speed sessions.
+                Log.w(TAG, "rebuildPreviewBuilderOneShot: skipped during high-speed recording");
+                return;
+            }
             Log.d(TAG, "rebuildPreviewBuilderOneShot: " + mCaptureSession + " " + mPreviewRequestBuilder + " " + mCaptureCallback + " " + mBackgroundHandler);
-            mCaptureSession.capture(mPreviewRequestBuilder.build(), mCaptureCallback, mBackgroundHandler);
+            mCaptureSession.capture(builder.build(), mCaptureCallback, mBackgroundHandler);
         } catch (IllegalStateException | IllegalArgumentException | NullPointerException e) {
             Logger.warnShort(TAG, "Cannot rebuildPreviewBuilderOneShot()!", e);
         } catch (CameraAccessException e) {
             Log.e(TAG, Log.getStackTraceString(e));
+        } finally {
+            // A trigger is an event, never persistent builder state, even on failure/skip.
+            builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE);
         }
+    }
+
+    private boolean previewAfCanTrigger() {
+        if (mPreviewRequestBuilder == null || mCameraAfModes == null) return false;
+        Integer mode = mPreviewRequestBuilder.get(CONTROL_AF_MODE);
+        if (mode == null || mode == CaptureRequest.CONTROL_AF_MODE_OFF
+                || mode == CaptureRequest.CONTROL_AF_MODE_EDOF) return false;
+        Float minimum = mCameraCharacteristics == null ? null
+                : mCameraCharacteristics.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE);
+        if (minimum != null && minimum <= 0f) return false;
+        for (int supported : mCameraAfModes) if (supported == mode) return true;
+        return false;
+    }
+
+    /** Acquire once on entry/re-entry to single-sweep AUTO; taps own their own protocol. */
+    public void startPreviewAutoFocus() {
+        if (burst || mCaptureSession == null || mIsRecordingVideo || mHighSpeedRecording
+                || isVideoMode() || (mTouchFocus != null && mTouchFocus.isTouchFocus)
+                || !previewAfCanTrigger()
+                || !Integer.valueOf(CaptureRequest.CONTROL_AF_MODE_AUTO).equals(
+                        mPreviewRequestBuilder.get(CONTROL_AF_MODE))) return;
+        mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER,
+                CaptureRequest.CONTROL_AF_TRIGGER_START);
+        rebuildPreviewBuilderOneShot();
     }
 
     /**
@@ -2479,18 +2501,13 @@ public class CaptureController implements MediaRecorder.OnInfoListener {
             return;
         }
         startTimerLocked();
-        // This is how to tell the camera to lock focus.
-        mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER,
-                CameraMetadata.CONTROL_AF_TRIGGER_START);
-        // Tell #mCaptureCallback to wait for the lock.
-        mState = STATE_WAITING_LOCK;
-        try {
-            mCaptureSession.setRepeatingRequest(mPreviewRequestBuilder.build(), mCaptureCallback,
-                    mBackgroundHandler);
-        } catch (CameraAccessException e) {
-            Log.e(TAG, "Failed to start camera preview because it couldn't access camera", e);
-        } catch (IllegalStateException e) {
-            Log.e(TAG, "Failed to start camera preview.", e);
+        boolean canTrigger = previewAfCanTrigger();
+        mState = canTrigger ? STATE_WAITING_LOCK : STATE_WAITING_NON_PRECAPTURE;
+        rebuildPreviewBuilder();
+        if (canTrigger && (mTouchFocus == null || !mTouchFocus.isTouchFocus)) {
+            mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER,
+                    CameraMetadata.CONTROL_AF_TRIGGER_START);
+            rebuildPreviewBuilderOneShot();
         }
     }
 
@@ -2513,6 +2530,9 @@ public class CaptureController implements MediaRecorder.OnInfoListener {
                     mBackgroundHandler);
         } catch (CameraAccessException | IllegalStateException e) {
             Log.e(TAG, Log.getStackTraceString(e));
+        } finally {
+            mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER,
+                    CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER_IDLE);
         }
     }
 
@@ -2987,6 +3007,8 @@ public class CaptureController implements MediaRecorder.OnInfoListener {
                         // Finally, we start displaying the camera preview.
                         mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
                                 getSelectedFpsRange());
+                        mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER,
+                                CaptureRequest.CONTROL_AF_TRIGGER_IDLE);
                         mPreviewInputRequest = mPreviewRequestBuilder.build();
                         if (isBurstSession && isDualSession) {
                             switch (CameraFragment.mSelectedMode) {
@@ -3576,6 +3598,7 @@ public class CaptureController implements MediaRecorder.OnInfoListener {
     }
 
     private void setCaptureRequestBuilder() throws CameraAccessException {
+        if (mTouchFocus != null) mTouchFocus.clearFocusOwnership();
         mPreviewRequestBuilder = null;
         mVideoRecorderSurface = null;
         mRecorderTargetAdded = false;
@@ -3589,6 +3612,8 @@ public class CaptureController implements MediaRecorder.OnInfoListener {
         }
 
         mPreviewRequestBuilder.addTarget(surface);
+        mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER,
+                CaptureRequest.CONTROL_AF_TRIGGER_IDLE);
         synchronized (mZslBufferLock) {
             while (!mZslRingBuffer.isEmpty()) {
                 Image img = mZslRingBuffer.pollFirst();
@@ -3643,18 +3668,7 @@ public class CaptureController implements MediaRecorder.OnInfoListener {
             captureStillPicture();
             return;
         }
-        if (mCameraAfModes.length > 1) lockFocus();
-        else {
-            try {
-                mState = STATE_WAITING_NON_PRECAPTURE;
-                mCaptureSession.setRepeatingRequest(mPreviewRequestBuilder.build(), mCaptureCallback,
-                        mBackgroundHandler);
-            } catch (CameraAccessException e) {
-                Log.e(TAG, "Failed to start camera preview because it couldn't access camera", e);
-            } catch (IllegalStateException e) {
-                Log.e(TAG, "Failed to start camera preview.", e);
-            }
-        }
+        lockFocus();
     }
 
     /**
@@ -3666,40 +3680,23 @@ public class CaptureController implements MediaRecorder.OnInfoListener {
             Log.d(TAG, "unlockFocus(): camera not ready (builder=" + mPreviewRequestBuilder + ", session=" + mCaptureSession + ")");
             return;
         }
-        try {
-            // Reset the auto-focus trigger
-            //mCaptureSession.stopRepeating();
-            //mCaptureSession.abortCaptures();
-            mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER,
-                    CameraMetadata.CONTROL_AF_TRIGGER_CANCEL);
-            rebuildPreviewBuilderOneShot();
-            //mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER,
-            //        CameraMetadata.CONTROL_AF_TRIGGER_START);
-            //rebuildPreviewBuilderOneShot();
-            reset3Aparams();
-            mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER,
-                    CameraMetadata.CONTROL_AF_TRIGGER_START);
-            rebuildPreviewBuilderOneShot();
-            mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER,
-                    CameraMetadata.CONTROL_AF_TRIGGER_CANCEL);
-            rebuildPreviewBuilderOneShot();
-            paramController.setupPreview();
-            /*mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER,
-                    CameraMetadata.CONTROL_AF_TRIGGER_CANCEL);
-            mCaptureSession.capture(mPreviewRequestBuilder.build(), mCaptureCallback,
-                    mBackgroundHandler);
-            mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER,
-                    CameraMetadata.CONTROL_AF_TRIGGER_START);
-            mCaptureSession.capture(mPreviewRequestBuilder.build(), mCaptureCallback,
-                    mBackgroundHandler);*/
-            // After this, the camera will go back to the normal state of preview.
-            mState = STATE_PREVIEW;
+        if (burst) return;
+        mState = STATE_PREVIEW;
+        if (mTouchFocus != null && mTouchFocus.isTouchFocus) {
+            // The preview already carries the tap's regions/mode; do not cancel its lock/watchers.
             rebuildPreviewBuilder();
-            //mCaptureSession.setRepeatingRequest(mPreviewRequest, mCaptureCallback,
-            //        mBackgroundHandler);
-        }catch(Exception e){
-            Log.d(TAG, "unlockFocus:"+e);
+            return;
         }
+        if (previewAfCanTrigger()) {
+            mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER,
+                    CameraMetadata.CONTROL_AF_TRIGGER_CANCEL);
+            rebuildPreviewBuilderOneShot();
+        }
+        reset3AModes();
+        // Restore manual AF_OFF before any AUTO acquisition is considered.
+        paramController.setupPreview();
+        rebuildPreviewBuilder();
+        startPreviewAutoFocus();
     }
     public CaptureRequest.Builder getDebugCaptureRequestBuilder(){
         final CaptureRequest.Builder captureBuilder;
@@ -4133,7 +4130,7 @@ public class CaptureController implements MediaRecorder.OnInfoListener {
             Object mode = mPreviewRequestBuilder.get(CONTROL_AF_MODE);
             if(mode != null && (int) mode != CaptureRequest.CONTROL_AF_MODE_AUTO || PreferenceKeys.getAfMode() == CaptureRequest.CONTROL_AF_MODE_AUTO && !PhotonCamera.getSettings().selectedMode.equals(CameraMode.RAWVIDEO)) {
                 captureBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO);
-                captureBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_CANCEL);
+                captureBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE);
             }
             //captureBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_EDOF);
             //if ((!(focus == 0.0 && Build.BRAND.equalsIgnoreCase("samsung")))) {
@@ -4467,6 +4464,12 @@ public class CaptureController implements MediaRecorder.OnInfoListener {
     }
 
     public void reset3Aparams() {
+        reset3AModes();
+        rebuildPreviewBuilder();
+        startPreviewAutoFocus();
+    }
+
+    private void reset3AModes() {
         setAEMode(mPreviewRequestBuilder, PreferenceKeys.getAeMode());
         if (isVideoMode()) {
             // VIDEO owns AF: re-assert continuous video instead of restoring
@@ -4476,7 +4479,6 @@ public class CaptureController implements MediaRecorder.OnInfoListener {
         } else {
             setAFMode(mPreviewRequestBuilder, PreferenceKeys.getAfMode());
         }
-        rebuildPreviewBuilder();
     }
 
     public void setPreviewAEModeRebuild(int aeMode) {

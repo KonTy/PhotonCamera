@@ -8,7 +8,7 @@ Manual PHOTO keeps the existing exposure/ISO request generation and applies an
 explicit, sensor-range-validated focus distance to still requests when preview AF
 is off, including infinity (0 diopters). Auto/tap focus is not overridden.
 `./gradlew :app:assembleManualPhoto` builds an in-place test candidate with package
-`com.particlesdevs.photoncamera.videotest`, versionCode at least 27178, and the
+`com.particlesdevs.photoncamera.videotest`, versionCode at least 27179, and the
 existing debug signer. It does not import the separate Night/video qualification
 or manual-panel UI changes.
 
@@ -31,6 +31,22 @@ then sequence completion, capture error or abort. Missing/invalid values are
 `UNKNOWN`; actual values never fall back to requests. No preview, Night or video
 frames are logged. Sequence completion does not prove processing/save completion
 or optical sharpness; finalized JPEG/DNG and device validation remain required.
+
+## Autofocus responsiveness candidate
+
+The existing Advanced > Auto Focus Mode setting is unchanged: Continuous Picture
+(default) continuously adjusts still-camera focus; Continuous Video favors smooth
+video adjustment; Auto performs a triggered single sweep and holds until another
+acquisition. Auto acquires on preview entry, return from manual focus, reset, and
+after a still capture; tap focus retains its tagged cancel/start protocol.
+Preview completions no longer retrigger Auto. AF START/CANCEL are discrete
+one-shots, and steady preview requests use IDLE, including after a failed/skipped
+one-shot. Manual AF_OFF does not trigger autofocus.
+
+These are Camera2 behavior modes, not a phase-detection/contrast-detection switch.
+The device HAL chooses the underlying algorithm; breathing does not identify it.
+This correction does not establish optical sharpness, speed, or hunt-free focus;
+those require device testing. See the [Android 3A modes reference](https://source.android.com/docs/core/camera/camera3_3Amodes).
 
 [![GPLv3 license](https://img.shields.io/badge/License-GPLv3-blue.svg)](./LICENSE)
 ## Links
