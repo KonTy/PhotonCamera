@@ -18,6 +18,7 @@ package com.particlesdevs.photoncamera.manual;
  */
 
 import android.hardware.camera2.CaptureRequest;
+import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CaptureResult;
 import android.hardware.camera2.params.ColorSpaceTransform;
 import android.hardware.camera2.params.RggbChannelVector;
@@ -98,6 +99,13 @@ public class ParamController implements Observer {
     }
 
     public void setFocus(float focusDist) {
+        if (focusDist != ManualParamModel.FOCUS_AUTO
+                && !FocusDistance.isValid(focusDist, CaptureController.mCameraCharacteristics == null
+                ? null : CaptureController.mCameraCharacteristics.get(
+                        CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE))) {
+            Log.e(TAG, "Rejected invalid manual focus distance: " + focusDist);
+            return;
+        }
         CaptureRequest.Builder builder = captureController.mPreviewRequestBuilder;
         if (builder == null) {
             Log.w(TAG, "setFocus(): mPreviewRequestBuilder is null");
@@ -109,6 +117,7 @@ public class ParamController implements Observer {
             builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF);
             builder.set(CaptureRequest.LENS_FOCUS_DISTANCE, focusDist);
         }
+        FOCUS = focusDist;
         captureController.rebuildPreviewBuilder();
     }
 
@@ -232,7 +241,6 @@ public class ParamController implements Observer {
                 setShutter((long) model.getCurrentExposureValue(), (int) model.getCurrentISOValue());
             }
             if (object.equals(ManualParamModel.ID_FOCUS)) {
-                FOCUS = (float) model.getCurrentFocusValue();
                 setFocus((float) model.getCurrentFocusValue());
             }
             if (object.equals(ManualParamModel.ID_WB)) {

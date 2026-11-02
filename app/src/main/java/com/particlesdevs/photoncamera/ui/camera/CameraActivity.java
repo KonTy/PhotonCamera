@@ -23,6 +23,7 @@ import androidx.fragment.app.Fragment;
 import androidx.preference.PreferenceManager;
 
 import com.particlesdevs.photoncamera.R;
+import com.particlesdevs.photoncamera.BuildConfig;
 import com.particlesdevs.photoncamera.app.PhotonCamera;
 import com.particlesdevs.photoncamera.app.base.BaseActivity;
 import com.particlesdevs.photoncamera.settings.MigrationManager;
@@ -176,11 +177,10 @@ public class CameraActivity extends BaseActivity {
             }
             return;
         }
-        if (secureSession) {
-            // Lockscreen secure session is capture-only: the SAF folder picker and the
-            // media-library permission UI cannot be completed over the keyguard, and
-            // pre-lock library content must stay hidden. Capture via MediaStore works
-            // without them; full access is requested after unlock (see onResume).
+        if (!requiresLibraryAccessForStartup(BuildConfig.BUILD_TYPE, secureSession, SDK_INT)) {
+            // manualPhoto on Android 11+ writes its own new image media through the
+            // existing file path saver; gallery reads and a SAF tree are not prerequisites.
+            // Secure sessions retain their existing library isolation.
             tryLoad();
             return;
         }
@@ -278,11 +278,15 @@ public class CameraActivity extends BaseActivity {
         return true;
     }
 
+    static boolean requiresLibraryAccessForStartup(String buildType, boolean secureSession, int sdkInt) {
+        return !secureSession
+                && !(sdkInt >= Build.VERSION_CODES.R && "manualPhoto".equals(buildType));
+    }
+
     private boolean hasAllPermissions() {
         boolean basicPermissions = Arrays.stream(PERMISSIONS).allMatch(permission -> checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED);
 
-        if (secureSession) {
-            // Capture-only over the keyguard: don't gate on gallery/SAF access.
+        if (!requiresLibraryAccessForStartup(BuildConfig.BUILD_TYPE, secureSession, SDK_INT)) {
             return basicPermissions;
         }
         if (SDK_INT >= Build.VERSION_CODES.R) {
@@ -412,4 +416,3 @@ public class CameraActivity extends BaseActivity {
     }
 
 }
-

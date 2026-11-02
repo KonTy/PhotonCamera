@@ -2,6 +2,36 @@
 
 Android Camera that uses Enhanced Image Processing
 
+## Manual PHOTO candidate
+
+Manual PHOTO keeps the existing exposure/ISO request generation and applies an
+explicit, sensor-range-validated focus distance to still requests when preview AF
+is off, including infinity (0 diopters). Auto/tap focus is not overridden.
+`./gradlew :app:assembleManualPhoto` builds an in-place test candidate with package
+`com.particlesdevs.photoncamera.videotest`, versionCode at least 27178, and the
+existing debug signer. It does not import the separate Night/video qualification
+or manual-panel UI changes.
+
+On Android 11+, only `manualPhoto` makes gallery-read and SAF folder access
+optional at ordinary camera startup; existing basic permission checks remain.
+Other build types and legacy storage checks are unchanged. The existing saver
+writes its own new JPEG/DNG media through direct file paths and scans successful
+outputs, without adding a storage framework or granting access to other media.
+Opening the camera does not establish that device writes or finalization work.
+On the same modern `manualPhoto` path, an absent optional
+`DCIM/PhotonCamera/Tuning/PhotonCameraTuning.ini` is reported explicitly and uses
+the established built-in tuning defaults without creating an empty file.
+Existing tuning files are still read; access and parse failures remain errors.
+Other build types/APIs and GL cleanup behavior are unchanged.
+
+Explicit manual PHOTO shots emit at most two `PhotonManualCapture` ASCII records
+(at most 512 bytes each): a process-local capture ID and the first completed
+frame's requested/actual AE, exposure nanoseconds, ISO, AF and focus diopters,
+then sequence completion, capture error or abort. Missing/invalid values are
+`UNKNOWN`; actual values never fall back to requests. No preview, Night or video
+frames are logged. Sequence completion does not prove processing/save completion
+or optical sharpness; finalized JPEG/DNG and device validation remain required.
+
 [![GPLv3 license](https://img.shields.io/badge/License-GPLv3-blue.svg)](./LICENSE)
 ## Links
 

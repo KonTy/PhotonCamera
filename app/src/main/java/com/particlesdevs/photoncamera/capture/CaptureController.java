@@ -36,6 +36,7 @@ import android.hardware.camera2.CameraConstrainedHighSpeedCaptureSession;
 import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CameraManager;
 import android.hardware.camera2.CameraMetadata;
+import android.hardware.camera2.CaptureFailure;
 import android.hardware.camera2.CaptureRequest;
 import android.hardware.camera2.CaptureResult;
 import android.hardware.camera2.TotalCaptureResult;
@@ -505,6 +506,10 @@ public class CaptureController implements MediaRecorder.OnInfoListener {
     private int mPreviewHeight;
     private ArrayList<CaptureRequest> captures;
     private CameraCaptureSession.CaptureCallback CaptureCallback;
+
+    private abstract static class StillCaptureCallback extends CameraCaptureSession.CaptureCallback {
+        abstract void submissionFailed(Exception failure, boolean configuration);
+    }
     private File vid = null;
     public int mMeasuredFrameCnt;
     public static boolean isProcessing;
@@ -2813,6 +2818,9 @@ public class CaptureController implements MediaRecorder.OnInfoListener {
     }
 
     public void createCameraPreviewSession(boolean isBurstSession) {
+        final StillCaptureCallback burstCallback = isBurstSession && isDualSession
+                && CaptureCallback instanceof StillCaptureCallback
+                ? (StillCaptureCallback) CaptureCallback : null;
         if (mCameraDevice == null) {
             // The device is gone (error or disconnect). Recovery reopens it and
             // rebuilds the session; continuing here would only NPE.
@@ -2829,6 +2837,7 @@ public class CaptureController implements MediaRecorder.OnInfoListener {
                 mTextureView.setSurfaceTextureListener(mSurfaceTextureListener);
                 // Report the missing session so a lens-switch cycle cannot stay
                 // active forever with no preview.
+                if (burstCallback != null) burstCallback.submissionFailed(null, true);
                 onPreviewSessionFailed(sessionToken);
                 return;
             }
@@ -3005,6 +3014,7 @@ public class CaptureController implements MediaRecorder.OnInfoListener {
                             }
                         }
                     } catch (Exception e) {
+                        if (burstCallback != null) burstCallback.submissionFailed(e, false);
                         Log.e(TAG, Log.getStackTraceString(e));
                     }
                     // A configured session completes the current switch cycle;
@@ -3027,6 +3037,7 @@ public class CaptureController implements MediaRecorder.OnInfoListener {
                 public void onConfigureFailed(
                         @NonNull CameraCaptureSession cameraCaptureSession) {
                     Log.d(TAG, "CameraCaptureSession onConfigureFailed()");
+                    if (burstCallback != null) burstCallback.submissionFailed(null, true);
                     onPreviewConfigureFailed(sessionToken);
                 }
             };
@@ -3049,6 +3060,7 @@ public class CaptureController implements MediaRecorder.OnInfoListener {
                 mCameraDevice.createCaptureSession(surfaces, stateCallback, mBackgroundHandler);
             }
         } catch (Exception e) {
+            if (burstCallback != null) burstCallback.submissionFailed(e, true);
             Log.e(TAG, Log.getStackTraceString(e));
             onPreviewSessionFailed(sessionToken);
         }
@@ -4006,6 +4018,7 @@ public class CaptureController implements MediaRecorder.OnInfoListener {
     }
 
     private void captureStillPicture() {
+        ManualPhotoCaptureLog submissionLog = null;
         try {
             if (null == mCameraDevice) {
                 return;
@@ -4155,6 +4168,20 @@ public class CaptureController implements MediaRecorder.OnInfoListener {
             rebuildPreviewBuilder();*/
 
             IsoExpoSelector.useTripod = PhotonCamera.getGyro().getTripod();
+            if (PhotonCamera.getSettings().selectedMode == CameraMode.PHOTO) {
+                try {
+                    com.particlesdevs.photoncamera.manual.FocusDistance.applyToStill(captureBuilder,
+                            paramController.FOCUS, mCameraCharacteristics.get(
+                                    CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE),
+                            Integer.valueOf(CaptureRequest.CONTROL_AF_MODE_OFF).equals(mode));
+                } catch (IllegalArgumentException e) {
+                    Log.e(TAG, "Manual PHOTO focus rejected", e);
+                    burst = false;
+                    cameraEventsListener.onProcessingError(e.getMessage());
+                    cameraEventsListener.onCaptureSequenceCompleted(null);
+                    return;
+                }
+            }
             if (frameCount == -1) {
                 for (int i = 0; i < 1; i++) {
                     if(!PhotonCamera.getSettings().selectedMode.equals(CameraMode.RAWVIDEO))
@@ -4188,12 +4215,35 @@ public class CaptureController implements MediaRecorder.OnInfoListener {
 
             final long[] baseFrameNumber = {0};
             final int[] maxFrameCount = {frameCount};
+            submissionLog = ManualPhotoCaptureLog.create(
+                    PhotonCamera.getSettings().selectedMode == CameraMode.PHOTO,
+                    paramController.SHUTTER, paramController.ISO, paramController.FOCUS);
+            final ManualPhotoCaptureLog manualLog = submissionLog;
+            final CameraDevice shotDevice = mCameraDevice;
+            final int shotOpenToken = openToken.get();
+            final List<CaptureRequest> shotRequests = new ArrayList<>(captures);
 
             cameraEventsListener.onCaptureStillPictureStarted("CaptureStarted!");
             mMeasuredFrameCnt = 0;
 
             cameraEventsListener.onBurstPrepared(null);
-            this.CaptureCallback = new CameraCaptureSession.CaptureCallback() {
+            this.CaptureCallback = new StillCaptureCallback() {
+                private boolean ownsManualCapture() {
+                    return manualLog != null && CaptureCallback == this
+                            && mCameraDevice == shotDevice && openToken.get() == shotOpenToken;
+                }
+
+                private boolean ownsManualCapture(CameraCaptureSession session) {
+                    return ownsManualCapture() && session == mCaptureSession
+                            && session.getDevice() == shotDevice;
+                }
+
+                @Override
+                void submissionFailed(Exception failure, boolean configuration) {
+                    if (!ownsManualCapture()) return;
+                    manualLog.submissionFailed(failure instanceof CameraAccessException
+                            ? ((CameraAccessException) failure).getReason() : null, configuration);
+                }
 
                 @Override
                 public void onCaptureStarted(@NonNull CameraCaptureSession session,
@@ -4227,6 +4277,9 @@ public class CaptureController implements MediaRecorder.OnInfoListener {
                                                @NonNull CaptureRequest request,
                                                @NonNull TotalCaptureResult result) {
 
+                    if (ownsManualCapture(session) && shotRequests.contains(request)) {
+                        manualLog.completed(request, result);
+                    }
                     int frameCount = (int) (result.getFrameNumber() - baseFrameNumber[0]);
                     Log.v("BurstCounter", "CaptureCompleted! FrameCount:" + frameCount);
                     Object time = result.get(CaptureResult.SENSOR_TIMESTAMP);
@@ -4272,6 +4325,9 @@ public class CaptureController implements MediaRecorder.OnInfoListener {
                                                        int sequenceId,
                                                        long lastFrameNumber) {
 
+                    if (ownsManualCapture(session)) {
+                        manualLog.sequenceCompleted(sequenceId, lastFrameNumber);
+                    }
                     int finalFrameCount = (int) (lastFrameNumber - baseFrameNumber[0]) + 1;
                     Log.v("BurstCounter", "CaptureSequenceCompleted! FrameCount:" + finalFrameCount);
                     Log.d("DefaultSaver", "CaptureSequenceCompleted! FrameCount:" + finalFrameCount);
@@ -4347,6 +4403,22 @@ public class CaptureController implements MediaRecorder.OnInfoListener {
                         //mBackgroundHandler.post(() -> {mImageSaver.runRaw(mCameraCharacteristics, mCaptureResult, new ArrayList<>(BurstShakiness), cameraRotation);});
                     }
                 }
+
+                @Override
+                public void onCaptureFailed(@NonNull CameraCaptureSession session,
+                                            @NonNull CaptureRequest request,
+                                            @NonNull CaptureFailure failure) {
+                    if (ownsManualCapture(session) && shotRequests.contains(request)) {
+                        manualLog.failed(failure.getReason());
+                    }
+                }
+
+                @Override
+                public void onCaptureSequenceAborted(@NonNull CameraCaptureSession session, int sequenceId) {
+                    if (ownsManualCapture(session)) {
+                        manualLog.aborted(sequenceId);
+                    }
+                }
             };
             //mCaptureSession.setRepeatingBurst(captures, CaptureCallback, null);
             burst = true;
@@ -4371,7 +4443,15 @@ public class CaptureController implements MediaRecorder.OnInfoListener {
                 }
             }
         } catch (CameraAccessException e) {
+            if (submissionLog != null) submissionLog.failed(e.getReason());
             Log.e(TAG, Log.getStackTraceString(e));
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            if (submissionLog == null) throw e;
+            submissionLog.submissionFailed(null, false);
+            Log.e(TAG, "Manual PHOTO submission failed", e);
+            burst = false;
+            cameraEventsListener.onProcessingError(e.getMessage());
+            cameraEventsListener.onCaptureSequenceCompleted(null);
         }
     }
 

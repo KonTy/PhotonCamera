@@ -15,6 +15,7 @@ android {
     def versionBuild
 
     buildFeatures {
+        buildConfig true
         dataBinding true
         mlModelBinding true
     }
@@ -77,6 +78,13 @@ android {
             jniDebuggable = true
             zipAlignEnabled = false
         }
+        manualPhoto {
+            initWith debug
+            matchingFallbacks = ['debug']
+            applicationIdSuffix '.videotest'
+            signingConfig signingConfigs.debug
+            resValue 'string', 'app_name', 'Photon Camera'
+        }
     }
 
     externalNativeBuild {
@@ -96,6 +104,9 @@ android {
     namespace 'com.particlesdevs.photoncamera'
     applicationVariants.all {
         variant -> variant.outputs.all {
+            if (variant.buildType.name == 'manualPhoto') {
+                versionCodeOverride = Math.max(versionBuild, 27178)
+            }
             outputFileName = "PhotonCamera-${versionName}${versionBuild}-${variant.name}.apk"
         }
     }
